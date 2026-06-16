@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 from io import BytesIO
 from datetime import datetime
 
@@ -14,20 +13,7 @@ except Exception:
     MATPLOT = False
 
 ARQUIVO_PADRAO = 'Base OTIF SOE AAs e LPs.xlsx'
-REPO_DIR = Path(__file__).resolve().parent if '__file__' in globals() else Path.cwd()
-DATA_DIR = REPO_DIR / 'data'
 ABA = 'BASE OTIF'
-
-
-def resolver_arquivo_padrao():
-    candidatos = [
-        REPO_DIR / ARQUIVO_PADRAO,
-        DATA_DIR / ARQUIVO_PADRAO,
-    ]
-    for caminho in candidatos:
-        if caminho.exists():
-            return caminho
-    return None
 TOP_LOJAS = 15
 DIAS_MAP = {0: 'SEG', 1: 'TER', 2: 'QUA', 3: 'QUI', 4: 'SEX'}
 ORDEM_DIAS = ['SEG', 'TER', 'QUA', 'QUI', 'SEX']
@@ -536,10 +522,8 @@ def ranking_lojas_exibir(rk, incluir_total=True):
     cols = ['Ranking','CD Origem','LOJA (SAP)','Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)','Score']
     if rk.empty:
         return pd.DataFrame(columns=cols)
-
     out = rk[['Ranking','CD Origem','LOJA (SAP)','Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)','Score Ordenação']].copy()
     out = out.rename(columns={'Score Ordenação': 'Score'})
-
     if incluir_total:
         totais = totais_ranking_lojas(rk)
         total_score = round(float(pd.to_numeric(rk['Score Ordenação'], errors='coerce').fillna(0).mean()), 2) if not rk.empty else 0.0
@@ -553,10 +537,8 @@ def ranking_lojas_exibir(rk, incluir_total=True):
             'Score': total_score
         }])
         out = pd.concat([out, total_row], ignore_index=True)
-
-    for c in ['Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)']:
+    for c in ['Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)','Score']:
         out[c] = out[c].apply(fmt_pct)
-    out['Score'] = out['Score'].apply(fmt_num)
     return out
 
 
@@ -729,19 +711,23 @@ def ranking_cds_comparativo_mes_a_mes(base_cr, base_exp):
     return out[cols]
 
 st.title('Indicadores dos Pedidos para LPs')
+st.caption('Revisão aplicada: protocolos distintos com contagem única no total. Nova regra dos indicadores: se ultrapassar o limite do indicador, o percentual é zerado.')
 
-arquivo = None
-arquivo_padrao = resolver_arquivo_padrao()
-arquivo_padrao_existe = arquivo_padrao is not None
-usar_padrao = True
+with st.sidebar:
+    st.header('Origem dos dados')
+    arquivo = st.file_uploader('Selecione o arquivo Excel', type=['xlsx'])
+    arquivo_padrao_existe = os.path.exists(ARQUIVO_PADRAO)
+    usar_padrao = st.checkbox('Usar arquivo padrão da pasta do projeto', value=arquivo_padrao_existe, disabled=not arquivo_padrao_existe)
+    if not arquivo_padrao_existe:
+        st.caption(f'Arquivo padrão não encontrado na pasta: {ARQUIVO_PADRAO}')
 
 try:
     if arquivo is not None:
         df = carregar(arquivo)
-    elif usar_padrao and arquivo_padrao_existe and arquivo_padrao is not None:
-        df = carregar(arquivo_padrao)
+    elif usar_padrao and os.path.exists(ARQUIVO_PADRAO):
+        df = carregar(ARQUIVO_PADRAO)
     else:
-        st.warning('Arquivo de dados não encontrado para carregar a aplicação.')
+        st.warning('Faça upload do Excel para continuar. O arquivo padrão não foi encontrado na pasta do projeto.')
         st.stop()
 except Exception as e:
     st.error(f'Erro ao carregar a base: {e}')
