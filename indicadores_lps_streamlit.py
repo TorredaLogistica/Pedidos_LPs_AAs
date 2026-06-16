@@ -533,16 +533,27 @@ def totais_ranking_lojas(rk):
 
 
 def ranking_lojas_exibir(rk, incluir_total=True):
-    cols = ['Ranking','CD Origem','LOJA (SAP)','Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)']
+    cols = ['Ranking','CD Origem','LOJA (SAP)','Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)','Score']
     if rk.empty:
         return pd.DataFrame(columns=cols)
-    out = rk[cols].copy()
+    out = rk[['Ranking','CD Origem','LOJA (SAP)','Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)','Score Ordenação']].copy()
+    out = out.rename(columns={'Score Ordenação': 'Score'})
     if incluir_total:
         totais = totais_ranking_lojas(rk)
-        total_row = pd.DataFrame([{'Ranking':'TOTAL','CD Origem':'','LOJA (SAP)':'','Indicador 1 (%)':totais['Indicador 1 (%)'],'Indicador 2 (%)':totais['Indicador 2 (%)'],'Indicador 3 (%)':totais['Indicador 3 (%)']}])
+        total_score = round(float(pd.to_numeric(rk['Score Ordenação'], errors='coerce').fillna(0).mean()), 2) if not rk.empty else 0.0
+        total_row = pd.DataFrame([{
+            'Ranking':'TOTAL',
+            'CD Origem':'',
+            'LOJA (SAP)':'',
+            'Indicador 1 (%)':totais['Indicador 1 (%)'],
+            'Indicador 2 (%)':totais['Indicador 2 (%)'],
+            'Indicador 3 (%)':totais['Indicador 3 (%)'],
+            'Score': total_score
+        }])
         out = pd.concat([out, total_row], ignore_index=True)
     for c in ['Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)']:
         out[c] = out[c].apply(fmt_pct)
+    out['Score'] = out['Score'].apply(fmt_num)
     return out
 
 
