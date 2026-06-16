@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from io import BytesIO
 from datetime import datetime
 
@@ -13,7 +14,20 @@ except Exception:
     MATPLOT = False
 
 ARQUIVO_PADRAO = 'Base OTIF SOE AAs e LPs.xlsx'
+REPO_DIR = Path(__file__).resolve().parent if '__file__' in globals() else Path.cwd()
+DATA_DIR = REPO_DIR / 'data'
 ABA = 'BASE OTIF'
+
+
+def resolver_arquivo_padrao():
+    candidatos = [
+        REPO_DIR / ARQUIVO_PADRAO,
+        DATA_DIR / ARQUIVO_PADRAO,
+    ]
+    for caminho in candidatos:
+        if caminho.exists():
+            return caminho
+    return None
 TOP_LOJAS = 15
 DIAS_MAP = {0: 'SEG', 1: 'TER', 2: 'QUA', 3: 'QUI', 4: 'SEX'}
 ORDEM_DIAS = ['SEG', 'TER', 'QUA', 'QUI', 'SEX']
@@ -560,10 +574,10 @@ def plot_ranking_lojas(rk):
         ax.set_ylim(0, y_max)
         ax.set_xticks(range(n))
         ax.set_xticklabels(labels, rotation=90, fontsize=8)
-        ax.set_ylabel('Score', fontsize=9)
+        ax.set_ylabel('Score (%)', fontsize=9)
         ax.tick_params(axis='y', labelsize=8)
         ax.grid(axis='y', alpha=0.5)
-        annotate_bars(ax, bars, vals, formatter='num', y_max=y_max)
+        annotate_bars(ax, bars, vals, formatter='pct', y_max=y_max)
         fig.tight_layout()
         st.pyplot(fig, use_container_width=True)
         plt.close(fig)
@@ -630,9 +644,8 @@ def ranking_cds_exibir(rk, incluir_total=True, totais_override=None):
         }])
         out = pd.concat([out, total_row], ignore_index=True)
 
-    for c in ['Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)']:
+    for c in ['Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)','Score']:
         out[c] = out[c].apply(fmt_pct)
-    out['Score'] = out['Score'].apply(fmt_num)
     out['Qtd Lojas'] = out['Qtd Lojas'].apply(lambda x: '' if x == '' else int(float(x)) if pd.notna(x) else '')
     return out
 
@@ -655,10 +668,10 @@ def plot_ranking_cds(rk):
         ax.set_ylim(0, y_max)
         ax.set_xticks(range(n))
         ax.set_xticklabels(labels, rotation=90, fontsize=8)
-        ax.set_ylabel('Score', fontsize=10)
+        ax.set_ylabel('Score (%)', fontsize=10)
         ax.tick_params(axis='y', labelsize=8)
         ax.grid(axis='y', alpha=0.3)
-        annotate_bars(ax, bars, vals, formatter='num', y_max=y_max)
+        annotate_bars(ax, bars, vals, formatter='pct', y_max=y_max)
         fig.tight_layout()
         st.pyplot(fig, use_container_width=True)
         plt.close(fig)
@@ -704,30 +717,25 @@ def ranking_cds_comparativo_mes_a_mes(base_cr, base_exp):
         return pd.DataFrame(columns=cols)
 
     out = pd.concat(blocos, ignore_index=True)
-    for c in ['Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)']:
+    for c in ['Indicador 1 (%)','Indicador 2 (%)','Indicador 3 (%)','Score']:
         out[c] = out[c].apply(fmt_pct)
-    out['Score'] = out['Score'].apply(fmt_num)
     out['Qtd Lojas'] = out['Qtd Lojas'].apply(lambda x: '' if x == '' else int(float(x)) if pd.notna(x) else '')
     return out[cols]
 
 st.title('Indicadores dos Pedidos para LPs')
-st.caption('Revisão aplicada: protocolos distintos com contagem única no total. Nova regra dos indicadores: se ultrapassar o limite do indicador, o percentual é zerado.')
 
-with st.sidebar:
-    st.header('Origem dos dados')
-    arquivo = st.file_uploader('Selecione o arquivo Excel', type=['xlsx'])
-    arquivo_padrao_existe = os.path.exists(ARQUIVO_PADRAO)
-    usar_padrao = st.checkbox('Usar arquivo padrão da pasta do projeto', value=arquivo_padrao_existe, disabled=not arquivo_padrao_existe)
-    if not arquivo_padrao_existe:
-        st.caption(f'Arquivo padrão não encontrado na pasta: {ARQUIVO_PADRAO}')
+arquivo = None
+arquivo_padrao = resolver_arquivo_padrao() if 'resolver_arquivo_padrao' in globals() else (Path(ARQUIVO_PADRAO) if Path(ARQUIVO_PADRAO).exists() else None)
+arquivo_padrao_existe = arquivo_padrao is not None
+usar_padrao = True
 
 try:
     if arquivo is not None:
         df = carregar(arquivo)
-    elif usar_padrao and os.path.exists(ARQUIVO_PADRAO):
-        df = carregar(ARQUIVO_PADRAO)
+    elif usar_padrao and arquivo_padrao_existe and arquivo_padrao is not None:
+        df = carregar(arquivo_padrao)
     else:
-        st.warning('Faça upload do Excel para continuar. O arquivo padrão não foi encontrado na pasta do projeto.')
+        st.warning('Arquivo de dados não encontrado para carregar a aplicação.')
         st.stop()
 except Exception as e:
     st.error(f'Erro ao carregar a base: {e}')
