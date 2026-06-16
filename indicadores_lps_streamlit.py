@@ -1,5 +1,5 @@
-
 import os
+from pathlib import Path
 from io import BytesIO
 from datetime import datetime
 
@@ -14,7 +14,20 @@ except Exception:
     MATPLOT = False
 
 ARQUIVO_PADRAO = 'Base OTIF SOE AAs e LPs.xlsx'
+REPO_DIR = Path(__file__).resolve().parent if '__file__' in globals() else Path.cwd()
+DATA_DIR = REPO_DIR / 'data'
 ABA = 'BASE OTIF'
+
+
+def resolver_arquivo_padrao():
+    candidatos = [
+        REPO_DIR / ARQUIVO_PADRAO,
+        DATA_DIR / ARQUIVO_PADRAO,
+    ]
+    for caminho in candidatos:
+        if caminho.exists():
+            return caminho
+    return None
 TOP_LOJAS = 15
 DIAS_MAP = {0: 'SEG', 1: 'TER', 2: 'QUA', 3: 'QUI', 4: 'SEX'}
 ORDEM_DIAS = ['SEG', 'TER', 'QUA', 'QUI', 'SEX']
@@ -703,22 +716,39 @@ def ranking_cds_comparativo_mes_a_mes(base_cr, base_exp):
 
 st.title('Indicadores dos Pedidos para LPs')
 st.caption('Revisão aplicada: protocolos distintos com contagem única no total. Nova regra dos indicadores: se ultrapassar o limite do indicador, o percentual é zerado.')
+st.caption('Versão ajustada para GitHub/Streamlit Cloud: leitura do Excel por upload ou automaticamente pela raiz do repositório/pasta data.')
+
 
 with st.sidebar:
     st.header('Origem dos dados')
     arquivo = st.file_uploader('Selecione o arquivo Excel', type=['xlsx'])
-    arquivo_padrao_existe = os.path.exists(ARQUIVO_PADRAO)
-    usar_padrao = st.checkbox('Usar arquivo padrão da pasta do projeto', value=arquivo_padrao_existe, disabled=not arquivo_padrao_existe)
-    if not arquivo_padrao_existe:
-        st.caption(f'Arquivo padrão não encontrado na pasta: {ARQUIVO_PADRAO}')
+    arquivo_padrao = resolver_arquivo_padrao()
+    arquivo_padrao_existe = arquivo_padrao is not None
+    local_padrao_txt = str(arquivo_padrao.relative_to(REPO_DIR)) if arquivo_padrao_existe else f'data/{ARQUIVO_PADRAO}'
+    usar_padrao = st.checkbox(
+        'Usar arquivo padrão da pasta do projeto',
+        value=arquivo_padrao_existe,
+        disabled=not arquivo_padrao_existe,
+        help='No GitHub/Streamlit Cloud, deixe o Excel no diretório raiz do repositório ou dentro da pasta data.'
+    )
+    if arquivo_padrao_existe:
+        st.caption(f'Arquivo padrão localizado em: {local_padrao_txt}')
+    else:
+        st.caption(
+            'Arquivo padrão não encontrado. Para rodar no GitHub/Streamlit Cloud, suba o Excel no repositório '
+            f'(raiz ou pasta data) com o nome: {ARQUIVO_PADRAO}'
+        )
 
 try:
     if arquivo is not None:
         df = carregar(arquivo)
-    elif usar_padrao and os.path.exists(ARQUIVO_PADRAO):
-        df = carregar(ARQUIVO_PADRAO)
+    elif usar_padrao and arquivo_padrao_existe and arquivo_padrao is not None:
+        df = carregar(arquivo_padrao)
     else:
-        st.warning('Faça upload do Excel para continuar. O arquivo padrão não foi encontrado na pasta do projeto.')
+        st.warning(
+            'Faça upload do Excel para continuar ou disponibilize o arquivo padrão no repositório '
+            f'(raiz ou pasta data) com o nome: {ARQUIVO_PADRAO}'
+        )
         st.stop()
 except Exception as e:
     st.error(f'Erro ao carregar a base: {e}')
