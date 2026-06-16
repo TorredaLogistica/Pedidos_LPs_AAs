@@ -1,0 +1,5 @@
+treamlit
+pandas
+numpy
+matplotlib
+openpyxl
