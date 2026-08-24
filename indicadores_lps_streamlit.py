@@ -722,6 +722,167 @@ def ranking_cds_comparativo_mes_a_mes(base_cr, base_exp):
     out['Qtd Lojas'] = out['Qtd Lojas'].apply(lambda x: '' if x == '' else int(float(x)) if pd.notna(x) else '')
     return out[cols]
 
+
+def fmt_int(v):
+    try:
+        return f'{int(round(float(v))):,}'.replace(',', '.')
+    except Exception:
+        return '0'
+
+
+def render_card_gerencial(titulo, texto, icone='📊', cor='#35698F', altura=156):
+    st.markdown(
+        f"""
+        <div class="card-gerencial" style="border-left-color:{cor}; min-height:{altura}px;">
+            <div class="card-titulo"><span class="card-icone">{icone}</span>{titulo}</div>
+            <div class="card-texto">{texto}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def analise_gerencial(base_cr, base_exp, ranking_lojas_df, ranking_cds_df, totais_indicadores):
+    st.markdown('### Análise Gerencial para Tomada de Decisão')
+    st.caption('Leitura automática dos dados conforme os filtros selecionados.')
+
+    if base_cr.empty:
+        st.warning('Não há dados na seleção atual para gerar a análise gerencial.')
+        return
+
+    pedidos_unicos = int(base_cr['PEDIDO'].nunique())
+    protocolos_validos = base_cr.loc[
+        base_cr['PROTOCOLO'].notna() & (base_cr['PROTOCOLO'].astype(str).str.strip() != ''),
+        'PROTOCOLO',
+    ].nunique()
+    lojas = int(base_cr['LOJA (SAP)'].nunique())
+    cds = int(base_cr['CD Origem'].nunique())
+
+    pedidos_custo = base_cr[['PEDIDO', 'CD Origem', 'LOJA (SAP)', 'Custo Faturamento']].drop_duplicates('PEDIDO')
+    custo_total = float(pd.to_numeric(pedidos_custo['Custo Faturamento'], errors='coerce').fillna(0).sum())
+    custo_medio = custo_total / pedidos_unicos if pedidos_unicos else 0.0
+
+    expedidos = base_exp.loc[
+        base_exp['DT-EXP'].notna(), 'PEDIDO'
+    ].nunique() if not base_exp.empty else 0
+    taxa_expedicao = (expedidos / pedidos_unicos * 100.0) if pedidos_unicos else 0.0
+
+    por_cd = (
+        pedidos_custo.groupby('CD Origem', dropna=False)
+        .agg(Pedidos=('PEDIDO', 'nunique'), Valor=('Custo Faturamento', 'sum'))
+        .reset_index()
+        .sort_values(['Valor', 'Pedidos'], ascending=[False, False])
+    )
+    cd_principal = str(por_cd.iloc[0]['CD Origem']) if not por_cd.empty else 'N/A'
+    valor_cd = float(por_cd.iloc[0]['Valor']) if not por_cd.empty else 0.0
+    pedidos_cd = int(por_cd.iloc[0]['Pedidos']) if not por_cd.empty else 0
+    pct_cd = valor_cd / custo_total * 100.0 if custo_total else 0.0
+
+    score_geral = float(pd.to_numeric(ranking_lojas_df.get('Score Ordenação', pd.Series(dtype=float)), errors='coerce').fillna(0).mean()) if not ranking_lojas_df.empty else 0.0
+    lojas_criticas = ranking_lojas_df[pd.to_numeric(ranking_lojas_df['Score Ordenação'], errors='coerce').fillna(0) < 100] if not ranking_lojas_df.empty else ranking_lojas_df
+    qtd_lojas_criticas = int(lojas_criticas['LOJA (SAP)'].nunique()) if not lojas_criticas.empty else 0
+
+    pior_loja = 'N/A'
+    pior_cd = 'N/A'
+    pior_score = 0.0
+    if not ranking_lojas_df.empty:
+        pior = ranking_lojas_df.sort_values('Score Ordenação').iloc[0]
+        pior_loja = str(pior['LOJA (SAP)'])
+        pior_cd = str(pior['CD Origem'])
+        pior_score = float(pior['Score Ordenação'])
+
+    sem_protocolo = int(base_cr.loc[
+        base_cr['PROTOCOLO'].isna() | (base_cr['PROTOCOLO'].astype(str).str.strip() == ''),
+        'PEDIDO',
+    ].nunique())
+    sem_expedicao = int(base_cr.loc[base_cr['DT-EXP'].isna(), 'PEDIDO'].nunique())
+    protocolos_repetidos = int(
+        base_cr.loc[
+            base_cr['PROTOCOLO'].notna() & (base_cr['PROTOCOLO'].astype(str).str.strip() != ''),
+            ['PROTOCOLO', 'PEDIDO'],
+        ].drop_duplicates().groupby('PROTOCOLO')['PEDIDO'].nunique().gt(1).sum()
+    )
+
+    ind1 = float(totais_indicadores.get('Indicador 1 (%)', 0.0))
+    ind2 = float(totais_indicadores.get('Indicador 2 (%)', 0.0))
+    ind3 = float(totais_indicadores.get('Indicador 3 (%)', 0.0))
+    pior_ind_nome, pior_ind_valor = min(
+        [('Indicador 1', ind1), ('Indicador 2', ind2), ('Indicador 3', ind3)],
+        key=lambda item: item[1],
+    )
+
+    if qtd_lojas_criticas > 0:
+        recomendacao = (
+            f'Priorize as <b>{fmt_int(qtd_lojas_criticas)} lojas abaixo de 100%</b>, começando por '
+            f'<b>{pior_loja}</b>, atendida pelo CD <b>{pior_cd}</b>. O principal ponto de atenção é '
+            f'<b>{pior_ind_nome}</b>, com resultado consolidado de <b>{fmt_pct(pior_ind_valor)}</b>. '
+            'Após o tratamento, acompanhe semanalmente a evolução dos três indicadores e valide se houve redução da recorrência.'
+        )
+    else:
+        recomendacao = (
+            'A seleção não apresenta lojas abaixo de 100% no score consolidado. Mantenha o acompanhamento semanal, '
+            'monitore alterações na concentração financeira e trate preventivamente registros sem protocolo ou data de expedição.'
+        )
+
+    st.markdown("""
+    <style>
+      .card-gerencial {
+        background:#FFFFFF; border:1px solid #E3E8EE; border-left:5px solid #35698F;
+        border-radius:12px; padding:18px 18px 16px 18px; margin:3px 0 14px 0;
+        box-shadow:0 3px 12px rgba(28,55,80,.10); box-sizing:border-box;
+      }
+      .card-titulo {font-size:16px; font-weight:700; color:#252525; margin-bottom:13px; display:flex; align-items:center; gap:9px;}
+      .card-icone {font-size:24px; line-height:1; color:#00A6C8;}
+      .card-texto {font-size:15px; line-height:1.58; color:#687483;}
+      .card-texto b {color:#5D6875; font-weight:700;}
+    </style>
+    """, unsafe_allow_html=True)
+
+    linha1_esq, linha1_dir = st.columns([1, 1])
+    with linha1_esq:
+        render_card_gerencial(
+            'Resumo executivo',
+            f'A seleção contém <b>{fmt_int(pedidos_unicos)} pedidos</b>, distribuídos em <b>{fmt_int(lojas)} lojas</b> e '
+            f'<b>{fmt_int(cds)} CDs</b>, somando <b>{fmt_moeda(custo_total)}</b>. O custo médio é de '
+            f'<b>{fmt_moeda(custo_medio)}</b> por pedido e a taxa de expedição é de <b>{fmt_pct(taxa_expedicao)}</b>.',
+            '📈', '#35698F', 145,
+        )
+    with linha1_dir:
+        render_card_gerencial(
+            'Concentração financeira',
+            f'O CD <b>{cd_principal}</b> concentra <b>{fmt_moeda(valor_cd)}</b>, ou <b>{fmt_pct(pct_cd)}</b> do valor selecionado, '
+            f'com <b>{fmt_int(pedidos_cd)} pedidos</b>. Essa concentração indica onde uma variação operacional pode gerar maior impacto financeiro.',
+            '🎯', '#35698F', 145,
+        )
+
+    linha2_a, linha2_b, linha2_c = st.columns(3)
+    with linha2_a:
+        render_card_gerencial(
+            'Pressão operacional',
+            f'Há <b>{fmt_int(qtd_lojas_criticas)} lojas</b> abaixo de 100% no score consolidado. '
+            f'A maior necessidade de atuação está na loja <b>{pior_loja}</b>, do CD <b>{pior_cd}</b>, com score de <b>{fmt_pct(pior_score)}</b>.',
+            '⏳', '#F47B20', 180,
+        )
+    with linha2_b:
+        render_card_gerencial(
+            'Principal indicador',
+            f'O menor resultado consolidado é o <b>{pior_ind_nome}</b>, com <b>{fmt_pct(pior_ind_valor)}</b>. '
+            f'Os resultados atuais são: Indicador 1 <b>{fmt_pct(ind1)}</b>, Indicador 2 <b>{fmt_pct(ind2)}</b> e Indicador 3 <b>{fmt_pct(ind3)}</b>.',
+            '🧭', '#35698F', 180,
+        )
+    with linha2_c:
+        render_card_gerencial(
+            'Qualidade e auditabilidade',
+            f'Foram identificados <b>{fmt_int(sem_protocolo)} pedidos sem protocolo</b>, '
+            f'<b>{fmt_int(sem_expedicao)} sem data de expedição</b> e <b>{fmt_int(protocolos_repetidos)} protocolos</b> associados a mais de um pedido. '
+            'Os registros devem ser validados antes de conclusões operacionais definitivas.',
+            '🛡️', '#35698F', 180,
+        )
+
+    rec_col, vazio = st.columns([1, 2])
+    with rec_col:
+        render_card_gerencial('Recomendação', recomendacao, '💡', '#35698F', 205)
+
 st.title('Indicadores dos Pedidos para LPs')
 
 arquivo = None
@@ -794,100 +955,107 @@ v1 = fmt_pct(totais_rk_lojas['Indicador 1 (%)'])
 v2 = fmt_pct(totais_rk_lojas['Indicador 2 (%)'])
 v3 = fmt_pct(totais_rk_lojas['Indicador 3 (%)'])
 
-c1, c2, c3 = st.columns(3)
-with c1:
-    render_metric_centered('Indicador 1 - Pedidos criados por semana', v1, title_size=15, value_size=40, margin_bottom=2)
-with c2:
-    render_metric_centered('Indicador 2 - Protocolos por dia na semana', v2, title_size=15, value_size=40, margin_bottom=2)
-with c3:
-    render_metric_centered('Indicador 3 - Expedições por dia', v3, title_size=15, value_size=40, margin_bottom=2)
+aba_indicadores, aba_gerencial = st.tabs(['Indicadores', 'Análise Gerencial'])
 
-st.subheader('Quantidade por dia da semana (SEG a SEX)')
-q1, q2, q3 = resumo_semanais(base_cr, base_exp)
-cc1, cc2, cc3 = st.columns(3)
-with cc1:
-    st.markdown('**Indicador 1 - quantidade de pedidos criados**')
-    st.dataframe(style_total(q1), hide_index=True, use_container_width=True)
-with cc2:
-    st.markdown('**Indicador 2 - quantidade de protocolos por dia na semana**')
-    st.dataframe(style_total(q2), hide_index=True, use_container_width=True)
-with cc3:
-    st.markdown('**Indicador 3 - quantidade de protocolos expedidos por dia**')
-    st.dataframe(style_total(q3), hide_index=True, use_container_width=True)
+with aba_indicadores:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        render_metric_centered('Indicador 1 - Pedidos criados por semana', v1, title_size=15, value_size=40, margin_bottom=2)
+    with c2:
+        render_metric_centered('Indicador 2 - Protocolos por dia na semana', v2, title_size=15, value_size=40, margin_bottom=2)
+    with c3:
+        render_metric_centered('Indicador 3 - Expedições por dia', v3, title_size=15, value_size=40, margin_bottom=2)
 
-st.subheader('Detalhamento de pedidos')
-det = detalhe(base_cr)
-st.dataframe(det, hide_index=True, use_container_width=True, height=360)
-det_buf = BytesIO()
-with pd.ExcelWriter(det_buf, engine='openpyxl') as writer:
-    det.to_excel(writer, sheet_name='Detalhamento', index=False)
-st.download_button('Baixar detalhamento em Excel', data=det_buf.getvalue(), file_name='detalhamento_pedidos.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    st.subheader('Quantidade por dia da semana (SEG a SEX)')
+    q1, q2, q3 = resumo_semanais(base_cr, base_exp)
+    cc1, cc2, cc3 = st.columns(3)
+    with cc1:
+        st.markdown('**Indicador 1 - quantidade de pedidos criados**')
+        st.dataframe(style_total(q1), hide_index=True, use_container_width=True)
+    with cc2:
+        st.markdown('**Indicador 2 - quantidade de protocolos por dia na semana**')
+        st.dataframe(style_total(q2), hide_index=True, use_container_width=True)
+    with cc3:
+        st.markdown('**Indicador 3 - quantidade de protocolos expedidos por dia**')
+        st.dataframe(style_total(q3), hide_index=True, use_container_width=True)
 
-st.divider()
-st.subheader('Indicadores gráficos')
-g1, g2, g3 = st.columns(3)
-with g1:
-    render_metric_centered('Média geral do Indicador 1', v1, title_size=15, value_size=40, margin_bottom=8)
-    plot_rotulado(i1, 'Ano-Semana Criação', 'Indicador 1 (%)', 'Indicador 1 - quantidade de pedidos criados')
-with g2:
-    render_metric_centered('Média geral do Indicador 2', v2, title_size=15, value_size=40, margin_bottom=8)
-    plot_rotulado(i2, 'Ano-Semana Criação', 'Indicador 2 (%)', 'Indicador 2 - quantidade de protocolos por dia na semana')
-with g3:
-    render_metric_centered('Média geral do Indicador 3', v3, title_size=15, value_size=40, margin_bottom=8)
-    plot_rotulado(i3, 'Ano-Semana Exp', 'Indicador 3 (%)', 'Indicador 3 - quantidade de protocolos expedidos por dia')
+    st.subheader('Detalhamento de pedidos')
+    det = detalhe(base_cr)
+    st.dataframe(det, hide_index=True, use_container_width=True, height=360)
+    det_buf = BytesIO()
+    with pd.ExcelWriter(det_buf, engine='openpyxl') as writer:
+        det.to_excel(writer, sheet_name='Detalhamento', index=False)
+    st.download_button('Baixar detalhamento em Excel', data=det_buf.getvalue(), file_name='detalhamento_pedidos.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-st.subheader('Ranking das lojas')
-rk_exibir = ranking_lojas_exibir(rk, incluir_total=True)
-st.dataframe(style_total(rk_exibir), hide_index=True, use_container_width=True, height=420)
-plot_ranking_lojas(rk)
+    st.divider()
+    st.subheader('Indicadores gráficos')
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        render_metric_centered('Média geral do Indicador 1', v1, title_size=15, value_size=40, margin_bottom=8)
+        plot_rotulado(i1, 'Ano-Semana Criação', 'Indicador 1 (%)', 'Indicador 1 - quantidade de pedidos criados')
+    with g2:
+        render_metric_centered('Média geral do Indicador 2', v2, title_size=15, value_size=40, margin_bottom=8)
+        plot_rotulado(i2, 'Ano-Semana Criação', 'Indicador 2 (%)', 'Indicador 2 - quantidade de protocolos por dia na semana')
+    with g3:
+        render_metric_centered('Média geral do Indicador 3', v3, title_size=15, value_size=40, margin_bottom=8)
+        plot_rotulado(i3, 'Ano-Semana Exp', 'Indicador 3 (%)', 'Indicador 3 - quantidade de protocolos expedidos por dia')
 
-st.subheader('Ranking dos CDs')
-rk_cd = ranking_cds(base_cr, base_exp)
-rk_cd_exibir = ranking_cds_exibir(
-    rk_cd,
-    incluir_total=True,
-    totais_override={
-        'Qtd Lojas': int(rk['LOJA (SAP)'].nunique()) if not rk.empty else 0,
-        **totais_rk_lojas,
-        'Score Ordenação': round(float(pd.to_numeric(rk['Score Ordenação'], errors='coerce').fillna(0).mean()), 2) if not rk.empty else 0.0
-    }
-)
-st.dataframe(style_total(rk_cd_exibir), hide_index=True, use_container_width=True, height=420)
-plot_ranking_cds(rk_cd)
+    st.subheader('Ranking das lojas')
+    rk_exibir = ranking_lojas_exibir(rk, incluir_total=True)
+    st.dataframe(style_total(rk_exibir), hide_index=True, use_container_width=True, height=420)
+    plot_ranking_lojas(rk)
 
-st.subheader('Ranking dos CDs - Comparativo - Mês a Mês')
-rk_cd_mes_a_mes = ranking_cds_comparativo_mes_a_mes(base_cr, base_exp)
-st.dataframe(style_total(rk_cd_mes_a_mes), hide_index=True, use_container_width=True, height=520)
+    st.subheader('Ranking dos CDs')
+    rk_cd = ranking_cds(base_cr, base_exp)
+    rk_cd_exibir = ranking_cds_exibir(
+        rk_cd,
+        incluir_total=True,
+        totais_override={
+            'Qtd Lojas': int(rk['LOJA (SAP)'].nunique()) if not rk.empty else 0,
+            **totais_rk_lojas,
+            'Score Ordenação': round(float(pd.to_numeric(rk['Score Ordenação'], errors='coerce').fillna(0).mean()), 2) if not rk.empty else 0.0
+        }
+    )
+    st.dataframe(style_total(rk_cd_exibir), hide_index=True, use_container_width=True, height=420)
+    plot_ranking_cds(rk_cd)
 
-st.subheader('Tabela analítica de consolidação por loja')
-st.dataframe(formatar_consolidacao(tabela_consolidacao(base_cr)), hide_index=True, use_container_width=True, height=420)
+    st.subheader('Ranking dos CDs - Comparativo - Mês a Mês')
+    rk_cd_mes_a_mes = ranking_cds_comparativo_mes_a_mes(base_cr, base_exp)
+    st.dataframe(style_total(rk_cd_mes_a_mes), hide_index=True, use_container_width=True, height=520)
 
-st.subheader('Quantidade de Pedidos por Dia - Semana - Mês')
-st.dataframe(pivot_qtd(base_cr, 'PEDIDO'), hide_index=True, use_container_width=True, height=340)
+    st.subheader('Tabela analítica de consolidação por loja')
+    st.dataframe(formatar_consolidacao(tabela_consolidacao(base_cr)), hide_index=True, use_container_width=True, height=420)
 
-st.subheader('Quantidade de Protocolos distintos por Dia - Semana - Mês')
-st.dataframe(pivot_qtd(base_cr, 'PROTOCOLO'), hide_index=True, use_container_width=True, height=340)
+    st.subheader('Quantidade de Pedidos por Dia - Semana - Mês')
+    st.dataframe(pivot_qtd(base_cr, 'PEDIDO'), hide_index=True, use_container_width=True, height=340)
 
-st.subheader('Percentual de Pedidos por Dia - Semana - Mês')
-st.dataframe(pct_pedidos_tabela(base_cr), hide_index=True, use_container_width=True, height=340)
+    st.subheader('Quantidade de Protocolos distintos por Dia - Semana - Mês')
+    st.dataframe(pivot_qtd(base_cr, 'PROTOCOLO'), hide_index=True, use_container_width=True, height=340)
 
-st.subheader('Percentual de Protocolos por Dia - Semana - Mês')
-st.dataframe(pct_protocolos_tabela(base_cr), hide_index=True, use_container_width=True, height=340)
+    st.subheader('Percentual de Pedidos por Dia - Semana - Mês')
+    st.dataframe(pct_pedidos_tabela(base_cr), hide_index=True, use_container_width=True, height=340)
 
-buf = BytesIO()
-with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-    det.to_excel(writer, sheet_name='Detalhamento', index=False)
-    q1.to_excel(writer, sheet_name='Resumo_Ind1_Semana', index=False)
-    q2.to_excel(writer, sheet_name='Resumo_Ind2_Semana', index=False)
-    q3.to_excel(writer, sheet_name='Resumo_Ind3_Semana', index=False)
-    i1.to_excel(writer, sheet_name='Indicador_1', index=False)
-    i2.to_excel(writer, sheet_name='Indicador_2', index=False)
-    i3.to_excel(writer, sheet_name='Indicador_3', index=False)
-    rk_exibir.to_excel(writer, sheet_name='Ranking_Lojas', index=False)
-    rk_cd_exibir.to_excel(writer, sheet_name='Ranking_CDs', index=False)
-    rk_cd_mes_a_mes.to_excel(writer, sheet_name='Ranking_CDs_Mes_a_Mes', index=False)
-    pct_pedidos_tabela(base_cr).to_excel(writer, sheet_name='Pct_Pedidos', index=False)
-    pct_protocolos_tabela(base_cr).to_excel(writer, sheet_name='Pct_Protocolos', index=False)
-    tabela_consolidacao(base_cr).to_excel(writer, sheet_name='Tabela_Consolidacao', index=False)
+    st.subheader('Percentual de Protocolos por Dia - Semana - Mês')
+    st.dataframe(pct_protocolos_tabela(base_cr), hide_index=True, use_container_width=True, height=340)
 
-st.download_button('Baixar resultado em Excel', data=buf.getvalue(), file_name='resultado_indicadores_lps.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        det.to_excel(writer, sheet_name='Detalhamento', index=False)
+        q1.to_excel(writer, sheet_name='Resumo_Ind1_Semana', index=False)
+        q2.to_excel(writer, sheet_name='Resumo_Ind2_Semana', index=False)
+        q3.to_excel(writer, sheet_name='Resumo_Ind3_Semana', index=False)
+        i1.to_excel(writer, sheet_name='Indicador_1', index=False)
+        i2.to_excel(writer, sheet_name='Indicador_2', index=False)
+        i3.to_excel(writer, sheet_name='Indicador_3', index=False)
+        rk_exibir.to_excel(writer, sheet_name='Ranking_Lojas', index=False)
+        rk_cd_exibir.to_excel(writer, sheet_name='Ranking_CDs', index=False)
+        rk_cd_mes_a_mes.to_excel(writer, sheet_name='Ranking_CDs_Mes_a_Mes', index=False)
+        pct_pedidos_tabela(base_cr).to_excel(writer, sheet_name='Pct_Pedidos', index=False)
+        pct_protocolos_tabela(base_cr).to_excel(writer, sheet_name='Pct_Protocolos', index=False)
+        tabela_consolidacao(base_cr).to_excel(writer, sheet_name='Tabela_Consolidacao', index=False)
+
+    st.download_button('Baixar resultado em Excel', data=buf.getvalue(), file_name='resultado_indicadores_lps.xlsx', mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+with aba_gerencial:
+    analise_gerencial(base_cr, base_exp, rk, rk_cd, totais_rk_lojas)
