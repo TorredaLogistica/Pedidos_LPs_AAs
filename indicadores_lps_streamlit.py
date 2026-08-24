@@ -883,6 +883,158 @@ def analise_gerencial(base_cr, base_exp, ranking_lojas_df, ranking_cds_df, totai
     with rec_col:
         render_card_gerencial('Recomendação', recomendacao, '💡', '#35698F', 205)
 
+
+    st.markdown('### Quebra semanal dos indicadores')
+    st.caption(
+        'Os rankings mostram pontos de atenção operacionais por loja e CD Origem. '
+        'A classificação é baseada exclusivamente nas regras objetivas dos indicadores e não representa avaliação individual.'
+    )
+
+    with st.expander('Entenda resumidamente as regras dos indicadores', expanded=True):
+        st.markdown(
+            '- **Indicador 1 | Pedidos criados por semana:** a loja atende à regra quando possui **até 6 pedidos distintos na semana**. '
+            'O ranking prioriza o maior excedente acima de 6.\n'
+            '- **Indicador 2 | Protocolos por dia na semana:** a loja atende à regra quando possui **até 2 protocolos distintos na semana**, '
+            'conforme a regra atualmente implementada no indicador. O ranking prioriza o maior excedente acima de 2.\n'
+            '- **Indicador 3 | Expedições por dia:** a loja atende à regra quando possui **até 1 protocolo expedido por dia**. '
+            'O ranking soma, na semana, os protocolos diários que excederam esse limite.'
+        )
+
+    def tabela_top5_loja_cd(indicador):
+        if indicador == 1:
+            detalhe_semana = (
+                base_cr[['Ano-Semana Criação', 'CD Origem', 'LOJA (SAP)', 'PEDIDO']]
+                .dropna(subset=['Ano-Semana Criação', 'PEDIDO'])
+                .drop_duplicates()
+                .groupby(['Ano-Semana Criação', 'CD Origem', 'LOJA (SAP)'])['PEDIDO']
+                .nunique().reset_index(name='Quantidade')
+                .rename(columns={'Ano-Semana Criação': 'Semana'})
+            )
+            detalhe_semana['Limite'] = 6
+            detalhe_semana['Excedente'] = (detalhe_semana['Quantidade'] - 6).clip(lower=0)
+            detalhe_semana['Leitura'] = detalhe_semana['Quantidade'].apply(lambda x: f'{fmt_int(x)} pedidos')
+        elif indicador == 2:
+            detalhe_semana = (
+                base_cr.loc[
+                    base_cr['PROTOCOLO'].notna() & (base_cr['PROTOCOLO'].astype(str).str.strip() != ''),
+                    ['Ano-Semana Criação', 'CD Origem', 'LOJA (SAP)', 'PROTOCOLO'],
+                ]
+                .drop_duplicates()
+                .groupby(['Ano-Semana Criação', 'CD Origem', 'LOJA (SAP)'])['PROTOCOLO']
+                .nunique().reset_index(name='Quantidade')
+                .rename(columns={'Ano-Semana Criação': 'Semana'})
+            )
+            detalhe_semana['Limite'] = 2
+            detalhe_semana['Excedente'] = (detalhe_semana['Quantidade'] - 2).clip(lower=0)
+            detalhe_semana['Leitura'] = detalhe_semana['Quantidade'].apply(lambda x: f'{fmt_int(x)} protocolos')
+        else:
+            dia_loja = (
+                base_exp.loc[
+                    base_exp['PROTOCOLO'].notna()
+                    & (base_exp['PROTOCOLO'].astype(str).str.strip() != '')
+                    & base_exp['dt_exp_dia'].notna(),
+                    ['Ano-Semana Exp', 'CD Origem', 'LOJA (SAP)', 'dt_exp_dia', 'PROTOCOLO'],
+                ]
+                .drop_duplicates()
+                .groupby(['Ano-Semana Exp', 'CD Origem', 'LOJA (SAP)', 'dt_exp_dia'])['PROTOCOLO']
+                .nunique().reset_index(name='Quantidade_dia')
+            )
+            dia_loja['Excedente_dia'] = (dia_loja['Quantidade_dia'] - 1).clip(lower=0)
+            detalhe_semana = (
+                dia_loja.groupby(['Ano-Semana Exp', 'CD Origem', 'LOJA (SAP)'])
+                .agg(Quantidade=('Quantidade_dia', 'sum'), Excedente=('Excedente_dia', 'sum'), Dias_com_excesso=('Excedente_dia', lambda x: int((x > 0).sum())))
+                .reset_index().rename(columns={'Ano-Semana Exp': 'Semana'})
+            )
+            detalhe_semana['Limite'] = 1
+            detalhe_semana['Leitura'] = detalhe_semana.apply(
+                lambda r: f"{fmt_int(r['Excedente'])} excedentes em {fmt_int(r['Dias_com_excesso'])} dia(s)", axis=1
+            )
+
+        if detalhe_semana.empty:
+            return detalhe_semana, pd.DataFrame(), []
+
+        detalhe_semana['Semana'] = detalhe_semana['Semana'].astype(str)
+        semanas = sorted(detalhe_semana['Semana'].dropna().unique().tolist())
+        return detalhe_semana, pd.DataFrame(), semanas
+
+    ind_tab1, ind_tab2, ind_tab3 = st.tabs([
+        'Indicador 1 | Pedidos por semana',
+        'Indicador 2 | Protocolos por semana',
+        'Indicador 3 | Expedições por dia',
+    ])
+
+    for numero_indicador, aba_indicador in [(1, ind_tab1), (2, ind_tab2), (3, ind_tab3)]:
+        with aba_indicador:
+            detalhe_ind, _, semanas_ind = tabela_top5_loja_cd(numero_indicador)
+            if not semanas_ind:
+                st.info('Sem dados disponíveis para este indicador na seleção atual.')
+                continue
+
+            semana_escolhida = st.selectbox(
+                'Semana analisada',
+                semanas_ind,
+                index=len(semanas_ind) - 1,
+                key=f'semana_gerencial_ind_{numero_indicador}',
+            )
+            semana_df = detalhe_ind[detalhe_ind['Semana'] == semana_escolhida].copy()
+            semana_desvios = semana_df[semana_df['Excedente'] > 0].copy()
+
+            if semana_desvios.empty:
+                st.success(f'Na semana {semana_escolhida}, nenhuma loja ultrapassou a regra do Indicador {numero_indicador}.')
+                continue
+
+            top_lojas = semana_desvios.sort_values(
+                ['Excedente', 'Quantidade', 'CD Origem', 'LOJA (SAP)'],
+                ascending=[False, False, True, True],
+            ).head(5).copy()
+            top_lojas.insert(0, 'Posição', range(1, len(top_lojas) + 1))
+
+            por_cd = (
+                semana_desvios.groupby('CD Origem', dropna=False)
+                .agg(
+                    Lojas_com_desvio=('LOJA (SAP)', 'nunique'),
+                    Quantidade=('Quantidade', 'sum'),
+                    Excedente=('Excedente', 'sum'),
+                )
+                .reset_index()
+                .sort_values(['Excedente', 'Quantidade', 'CD Origem'], ascending=[False, False, True])
+                .head(5)
+            )
+            por_cd.insert(0, 'Posição', range(1, len(por_cd) + 1))
+
+            principal = top_lojas.iloc[0]
+            st.markdown(
+                f"**Leitura da semana {semana_escolhida}:** a loja **{principal['LOJA (SAP)']}**, do CD "
+                f"**{principal['CD Origem']}**, apresenta o maior desvio do Indicador {numero_indicador}, com "
+                f"**{fmt_int(principal['Excedente'])} ocorrência(s) acima do limite**."
+            )
+
+            col_lojas, col_cds = st.columns(2)
+            with col_lojas:
+                st.markdown('#### 5 maiores pontos de atenção por loja')
+                cols_loja = ['Posição', 'CD Origem', 'LOJA (SAP)', 'Leitura', 'Excedente']
+                st.dataframe(
+                    top_lojas[cols_loja].rename(columns={'Excedente': 'Acima do limite'}),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            with col_cds:
+                st.markdown('#### 5 maiores pontos de atenção por CD Origem')
+                st.dataframe(
+                    por_cd.rename(columns={
+                        'Lojas_com_desvio': 'Lojas com desvio',
+                        'Quantidade': 'Volume total',
+                        'Excedente': 'Acima do limite',
+                    }),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            st.info(
+                'Use o ranking como direcionador de análise. Antes de qualquer ação, valide sazonalidade, volume atendido, '
+                'restrições operacionais e qualidade dos registros.'
+            )
+
 st.title('Indicadores dos Pedidos para LPs')
 
 arquivo = None
